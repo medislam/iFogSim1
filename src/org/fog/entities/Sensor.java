@@ -81,7 +81,7 @@ public class Sensor extends SimEntity{
 	public void transmit(){
 		AppEdge _edge = null;
 		for(AppEdge edge : getApp().getEdges()){
-			if(edge.getSource().equals(getTupleType()))
+			if(edge.getSource().equals(getName()) && edge.getTupleType().equals(getTupleType()))
 				_edge = edge;
 		}
 		long cpuLength = (long) _edge.getTupleCpuLength();
@@ -100,6 +100,9 @@ public class Sensor extends SimEntity{
 		tuple.setActualTupleId(actualTupleId);
 		
 		send(gatewayDeviceId, getLatency(), FogEvents.TUPLE_ARRIVAL,tuple);
+		
+		System.out.println("Time: "+CloudSim.getClock()+" Sensor: "+this.getName()+" sends : FogEvents.TUPLE_ARRIVAL to "+gatewayDeviceId+" tupletype:"+tuple.getTupleType()+
+				" Arrival time :"+(CloudSim.getClock()+getLatency()));
 	}
 	
 	private int updateTimings(String src, String dest){

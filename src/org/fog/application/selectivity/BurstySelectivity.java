@@ -86,4 +86,10 @@ public class BurstySelectivity implements SelectivityModel{
 		this.firstHighTime = firstHighTime;
 	}
 
+	@Override
+	public double getSelectivity() {
+		// TODO Auto-generated method stub
+		return 0;
+	}
+
 }

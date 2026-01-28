@@ -18,7 +18,7 @@ public abstract class ModulePlacement {
 	
 	private List<FogDevice> fogDevices;
 	private Application application;
-	private Map<String, List<Integer>> moduleToDeviceMap;
+	private static Map<String, List<Integer>> moduleToDeviceMap;
 	private Map<Integer, List<AppModule>> deviceToModuleMap;
 	private Map<Integer, Map<String, Integer>> moduleInstanceCountMap;
 	
@@ -61,6 +61,7 @@ public abstract class ModulePlacement {
 		} else {
 			System.err.println("Module "+module.getName()+" cannot be created on device "+device.getName());
 			System.err.println("Terminating");
+			System.exit(0);
 			return false;
 		}
 	}
@@ -119,6 +120,10 @@ public abstract class ModulePlacement {
 
 	public void setModuleInstanceCountMap(Map<Integer, Map<String, Integer>> moduleInstanceCountMap) {
 		this.moduleInstanceCountMap = moduleInstanceCountMap;
+	}
+	
+	public static int getNodeIdOfModuleName(String modName) {
+		return moduleToDeviceMap.get(modName).get(0);
 	}
 
 }

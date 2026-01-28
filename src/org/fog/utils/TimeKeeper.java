@@ -23,6 +23,8 @@ public class TimeKeeper {
 	private Map<Integer, Double> loopIdToCurrentAverage;
 	private Map<Integer, Integer> loopIdToCurrentNum;
 	
+	public static double total_data_transfert_time = 0;
+	
 	public static TimeKeeper getInstance(){
 		if(instance == null)
 			instance = new TimeKeeper();
@@ -47,6 +49,9 @@ public class TimeKeeper {
 		} else{
 			double currentAverage = tupleTypeToAverageCpuTime.get(tuple.getTupleType());
 			int currentCount = tupleTypeToExecutedTupleCount.get(tuple.getTupleType());
+			tupleTypeToExecutedTupleCount.put(tuple.getTupleType(), currentCount + 1);
+			currentCount = tupleTypeToExecutedTupleCount.get(tuple.getTupleType());
+			//System.out.println(currentCount + "   *****  " +tuple.getTupleType());
 			tupleTypeToAverageCpuTime.put(tuple.getTupleType(), (currentAverage*currentCount+executionTime)/(currentCount+1));
 		}
 	}

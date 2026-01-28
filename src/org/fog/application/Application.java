@@ -57,6 +57,7 @@ public class Application {
 	 * @param ram
 	 */
 	public void addAppModule(String moduleName, int ram){
+		System.out.println("add Module: "+moduleName+" with ram: "+ram+" to application");
 		int mips = 1000;
 		long size = 10000;
 		long bw = 1000;
@@ -68,6 +69,21 @@ public class Application {
 		getModules().add(module);
 		
 	}
+	
+	public void addAppModule(String moduleName, int mips, int ram){
+		System.out.println("add Module: "+moduleName+" with ram: "+ram+" to application");
+		
+		long size = 10000;
+		long bw = 1000;
+		String vmm = "Xen";
+		
+		AppModule module = new AppModule(FogUtils.generateEntityId(), moduleName, appId, userId, 
+				mips, ram, bw, size, vmm, new TupleScheduler(mips, 1), new HashMap<Pair<String, String>, SelectivityModel>());
+		
+		getModules().add(module);
+		
+	}
+	
 	
 	/**
 	 * Adds a non-periodic edge to the application model.
@@ -81,6 +97,8 @@ public class Application {
 	 */
 	public void addAppEdge(String source, String destination, double tupleCpuLength, 
 			double tupleNwLength, String tupleType, int direction, int edgeType){
+		
+		System.out.println("add AppEdge between source : "+source+" and destination : "+destination+" tupleType : "+tupleType);
 		AppEdge edge = new AppEdge(source, destination, tupleCpuLength, tupleNwLength, tupleType, direction, edgeType);
 		getEdges().add(edge);
 		getEdgeMap().put(edge.getTupleType(), edge);
@@ -111,6 +129,8 @@ public class Application {
 	 * @param selectivityModel Selectivity model governing the relation between the incoming and outgoing edge
 	 */
 	public void addTupleMapping(String moduleName, String inputTupleType, String outputTupleType, SelectivityModel selectivityModel){
+		System.out.println("add tuple mapping on module : "+moduleName+" inputTupleType :"+inputTupleType+" outputTupleType : "+outputTupleType+" selectivity : "
+					+selectivityModel.getSelectivity());
 		AppModule module = getModuleByName(moduleName);
 		module.getSelectivityMap().put(new Pair<String, String>(inputTupleType, outputTupleType), selectivityModel);
 	}

@@ -2,6 +2,7 @@ package org.fog.entities;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +19,7 @@ import org.cloudbus.cloudsim.VmAllocationPolicy;
 import org.cloudbus.cloudsim.core.CloudSim;
 import org.cloudbus.cloudsim.core.CloudSimTags;
 import org.cloudbus.cloudsim.core.SimEvent;
+import org.cloudbus.cloudsim.network.DelayMatrix_Float;
 import org.cloudbus.cloudsim.power.PowerDatacenter;
 import org.cloudbus.cloudsim.power.PowerHost;
 import org.cloudbus.cloudsim.power.models.PowerModel;
@@ -28,6 +30,7 @@ import org.fog.application.AppEdge;
 import org.fog.application.AppLoop;
 import org.fog.application.AppModule;
 import org.fog.application.Application;
+import org.fog.placement.ModulePlacement;
 import org.fog.policy.AppModuleAllocationPolicy;
 import org.fog.scheduler.StreamOperatorScheduler;
 import org.fog.utils.Config;
@@ -58,6 +61,8 @@ public class FogDevice extends PowerDatacenter {
 	 */
 	protected int parentId;
 	
+	
+	
 	/**
 	 * ID of the Controller
 	 */
@@ -68,6 +73,18 @@ public class FogDevice extends PowerDatacenter {
 	protected List<Integer> childrenIds;
 
 	protected Map<Integer, List<String>> childToOperatorsMap;
+	
+	/**
+	 * IDs of left right
+	 */
+	protected int leftId = -1;
+	protected int rightId = -1;
+	
+	protected float leftLatency;
+	protected float rightLatency;
+	
+	protected float leftlinkBandwidth;
+	protected float rightlinkBandwidth;
 	
 	/**
 	 * Flag denoting whether the link southwards from this FogDevice is busy
@@ -93,6 +110,17 @@ public class FogDevice extends PowerDatacenter {
 	
 	protected double totalCost;
 	
+	
+	
+    private Queue<Pair<Tuple, AppModule>> tupleQueue; // Utilisation d'une Queue pour garantir le FIFO
+
+    private List<Tuple> executingTuples;
+    
+    private double availableMips;
+    private double availableRam;
+	
+	
+	
 	protected Map<String, Map<String, Integer>> moduleInstanceCount;
 	
 	public FogDevice(
@@ -100,6 +128,10 @@ public class FogDevice extends PowerDatacenter {
 			FogDeviceCharacteristics characteristics,
 			VmAllocationPolicy vmAllocationPolicy,
 			List<Storage> storageList,
+			int rightId, 
+			int leftId, 
+			float rightLatency, 
+			float leftLatency, 
 			double schedulingInterval,
 			double uplinkBandwidth, double downlinkBandwidth, double uplinkLatency, double ratePerMips) throws Exception {
 		super(name, characteristics, vmAllocationPolicy, storageList, schedulingInterval);
@@ -114,6 +146,14 @@ public class FogDevice extends PowerDatacenter {
 		setUplinkLatency(uplinkLatency);
 		setRatePerMips(ratePerMips);
 		setAssociatedActuatorIds(new ArrayList<Pair<Integer, Double>>());
+		
+		
+		setLeftId(leftId);
+		setRightId(rightId);
+		setRightLatency(rightLatency);
+		setLeftLatency(leftLatency);
+		
+		
 		for (Host host : getCharacteristics().getHostList()) {
 			host.setDatacenter(this);
 		}
@@ -146,6 +186,13 @@ public class FogDevice extends PowerDatacenter {
 		setTotalCost(0);
 		setModuleInstanceCount(new HashMap<String, Map<String, Integer>>());
 		setChildToLatencyMap(new HashMap<Integer, Double>());
+		
+		Host host = getCharacteristics().getHostList().get(0);
+
+		tupleQueue = new LinkedList<>();
+        executingTuples = new ArrayList<>();
+        availableMips = host.getTotalMips();
+        availableRam = host.getRam();
 	}
 
 	public FogDevice(
@@ -159,8 +206,8 @@ public class FogDevice extends PowerDatacenter {
 		peList.add(new Pe(0, new PeProvisionerOverbooking(mips))); // need to store Pe id and MIPS Rating
 
 		int hostId = FogUtils.generateEntityId();
-		long storage = 1000000; // host storage
-		int bw = 10000;
+		long storage = 1000000000; // host storage
+		int bw = 100000000;
 
 		PowerHost host = new PowerHost(
 				hostId,
@@ -249,6 +296,11 @@ public class FogDevice extends PowerDatacenter {
 		case FogEvents.TUPLE_ARRIVAL:
 			processTupleArrival(ev);
 			break;
+		
+		case FogEvents.TupleExcutionCompleted :
+			ProcessTupleExcutionCompleted(ev);
+			break;
+		
 		case FogEvents.LAUNCH_MODULE:
 			processModuleArrival(ev);
 			break;
@@ -464,13 +516,17 @@ public class FogDevice extends PowerDatacenter {
 						Tuple tuple = (Tuple)cl;
 						TimeKeeper.getInstance().tupleEndedExecution(tuple);
 						Application application = getApplicationMap().get(tuple.getAppId());
-						Logger.debug(getName(), "Completed execution of tuple "+tuple.getCloudletId()+"on "+tuple.getDestModuleName());
+						Logger.debug(getName(), "Completed execution of tuple "+tuple.getTupleType()+" on "+tuple.getDestModuleName());
+						System.out.println("Time: "+CloudSim.getClock()+"  "+getName()+ " Completed execution of tuple "+tuple.getTupleType()+" on "+tuple.getDestModuleName());
+						
 						List<Tuple> resultantTuples = application.getResultantTuples(tuple.getDestModuleName(), tuple, getId(), vm.getId());
 						for(Tuple resTuple : resultantTuples){
 							resTuple.setModuleCopyMap(new HashMap<String, Integer>(tuple.getModuleCopyMap()));
 							resTuple.getModuleCopyMap().put(((AppModule)vm).getName(), vm.getId());
 							updateTimingsOnSending(resTuple);
-							sendToSelf(resTuple);
+							//sendToSelf(resTuple);
+							int devId = ModulePlacement.getNodeIdOfModuleName(resTuple.getDestModuleName());
+							sendToNode(devId, resTuple);
 						}
 						sendNow(cl.getUserId(), CloudSimTags.CLOUDLET_RETURN, cl);
 					}
@@ -520,12 +576,18 @@ public class FogDevice extends PowerDatacenter {
 	}
 	
 	protected void updateAllocatedMips(String incomingOperator){
+		
 		getHost().getVmScheduler().deallocatePesForAllVms();
+		
 		for(final Vm vm : getHost().getVmList()){
 			if(vm.getCloudletScheduler().runningCloudlets() > 0 || ((AppModule)vm).getName().equals(incomingOperator)){
+				
 				getHost().getVmScheduler().allocatePesForVm(vm, new ArrayList<Double>(){
 					protected static final long serialVersionUID = 1L;
-				{add((double) getHost().getTotalMips());}});
+				//{add((double) getHost().getTotalMips());}});
+				{add((double)vm.getMips());}});
+				
+			
 			}else{
 				getHost().getVmScheduler().allocatePesForVm(vm, new ArrayList<Double>(){
 					protected static final long serialVersionUID = 1L;
@@ -612,13 +674,17 @@ public class FogDevice extends PowerDatacenter {
 			sendDown(tuple, childId);
 		}
 	}
+	
 	int numClients=0;
+	
 	protected void processTupleArrival(SimEvent ev){
 		Tuple tuple = (Tuple)ev.getData();
 		
 		if(getName().equals("cloud")){
 			updateCloudTraffic();
 		}
+		
+		System.out.println("Time: "+CloudSim.getClock()+" "+this.getName()+" process Tuple Arrival evnt:"+ev.toString()+" tupletype:"+tuple.getTupleType());
 		
 		/*if(getName().equals("d-0") && tuple.getTupleType().equals("_SENSOR")){
 			System.out.println(++numClients);
@@ -641,7 +707,8 @@ public class FogDevice extends PowerDatacenter {
 				getHost().getVmScheduler().deallocatePesForVm(operator);
 				getHost().getVmScheduler().allocatePesForVm(operator, new ArrayList<Double>(){
 					protected static final long serialVersionUID = 1L;
-				{add((double) getHost().getTotalMips());}});
+				//{add((double) getHost().getTotalMips());}});
+				{add((double) operator.getMips());}});
 			}
 		}
 		
@@ -665,9 +732,10 @@ public class FogDevice extends PowerDatacenter {
 				tuple.setVmId(vmId);
 				//Logger.error(getName(), "Executing tuple for operator " + moduleName);
 				
-				updateTimingsOnReceipt(tuple);
+				//updateTimingsOnReceipt(tuple);
 				
 				executeTuple(ev, tuple.getDestModuleName());
+				
 			}else if(tuple.getDestModuleName()!=null){
 				if(tuple.getDirection() == Tuple.UP)
 					sendUp(tuple);
@@ -720,32 +788,160 @@ public class FogDevice extends PowerDatacenter {
 	
 	protected void executeTuple(SimEvent ev, String moduleName){
 		Logger.debug(getName(), "Executing tuple on module "+moduleName);
+		
 		Tuple tuple = (Tuple)ev.getData();
 		
+		System.out.println("Time: "+CloudSim.getClock()+" "+getName()+ "  Executing tuple :"+tuple.getTupleType()+ " on module "+moduleName);
 		AppModule module = getModuleByName(moduleName);
+
+		TimeKeeper.getInstance().tupleStartedExecution(tuple);
 		
-		if(tuple.getDirection() == Tuple.UP){
-			String srcModule = tuple.getSrcModuleName();
-			if(!module.getDownInstanceIdsMaps().containsKey(srcModule))
-				module.getDownInstanceIdsMaps().put(srcModule, new ArrayList<Integer>());
-			if(!module.getDownInstanceIdsMaps().get(srcModule).contains(tuple.getSourceModuleId()))
-				module.getDownInstanceIdsMaps().get(srcModule).add(tuple.getSourceModuleId());
+		executeTuple(tuple, module);
+
+	}
+	
+	public void executeTuple(Tuple tuple, AppModule appModule) {
+		
+        double appModuleMips = appModule.getMips(); // MIPS requis pour exécuter le tuple
+        long appModuleRam = appModule.getRam(); // RAM requise pour exécuter le tuple
+        double tupleSizeMips = tuple.getCloudletLength(); // Taille du tuple en MIPS
+        
+        Pair<Tuple, AppModule> pair = new Pair<Tuple, AppModule>(tuple, appModule);
+
+
+        // Vérifier si les ressources sont disponibles
+        if (availableMips >= appModuleMips && availableRam >= appModuleRam) {
+            // Décompte des ressources utilisées
+            availableMips -= appModuleMips;
+            availableRam -= appModuleRam;
+            
+            double executionTime = (double) (tupleSizeMips / appModuleMips); // Temps d'exécution en millisecondes
+
+            // Ajouter le tuple à la liste des tuples en cours d'exécution
+            executingTuples.add(tuple);
+            
+            
+                        
+            send(this.getId(), executionTime, FogEvents.TupleExcutionCompleted, pair);
+            
+     
+            // Affichage des informations sur l'exécution du tuple
+            System.out.println("Tuple " + tuple.getTupleType() + " sera exécuté sur FogDevice " + this.getName() + " durant " + executionTime + " ms");
+        } else {
+        	// Si les ressources ne sont pas disponibles, ajouter le tuple à la file d'attente
+            tupleQueue.offer(pair);
+            System.out.println("Tuple " + tuple.getTupleType() + " en attente d'exécution sur FogDevice " + this.getName());
+        }
+    }
+	
+	
+	public void ProcessTupleExcutionCompleted(SimEvent ev) {
+		
+		Pair<Tuple, AppModule> pair = (Pair<Tuple, AppModule>) ev.getData();
+		Tuple tuple = pair.getFirst();
+		AppModule appModule = pair.getSecond();
+		
+		double appModuleMips = appModule.getMips(); // MIPS requis pour exécuter le tuple
+        long appModuleRam = appModule.getRam(); // RAM requise pour exécuter le tuple		
+		
+		if(this.executingTuples.contains(tuple)) {
+			executingTuples.remove(tuple);
 			
-			int instances = -1;
-			for(String _moduleName : module.getDownInstanceIdsMaps().keySet()){
-				instances = Math.max(module.getDownInstanceIdsMaps().get(_moduleName).size(), instances);
+			// Libérer les ressources utilisées
+            availableMips += appModuleMips;
+            availableRam += appModuleRam;
+            
+            
+			TimeKeeper.getInstance().tupleEndedExecution(tuple);
+			Application application = getApplicationMap().get(tuple.getAppId());
+			Logger.debug(getName(), "Completed execution of tuple "+tuple.getTupleType()+" on "+tuple.getDestModuleName());
+			System.out.println("Time: "+CloudSim.getClock()+"  "+getName()+ " Completed execution of tuple "+tuple.getTupleType()+" on "+tuple.getDestModuleName());
+			
+			System.out.println("Sending resulting tuples for pair tuple :"+tuple.getTupleType()+" Module "+appModule.getName());
+			List<Tuple> resultantTuples = application.getResultantTuples(tuple.getDestModuleName(), tuple, getId(), appModule.getId());
+			
+			System.out.println("Number of resulting tuples = "+resultantTuples.size());
+			
+			for(Tuple resTuple : resultantTuples){
+				
+				resTuple.setModuleCopyMap(new HashMap<String, Integer>(tuple.getModuleCopyMap()));
+				
+				resTuple.getModuleCopyMap().put(appModule.getName(), appModule.getId());
+
+				
+				int devId = ModulePlacement.getNodeIdOfModuleName(resTuple.getDestModuleName());
+				sendToNode(devId, resTuple);
 			}
-			module.setNumInstances(instances);
+            
+            
+            //Lancer les anciennes éxecutions 
+            processTupleQueue();
+            			
+		}else {
+			System.err.println("Erreur, le tuple "+tuple.getTupleType()+" n'est pas trouvé dans la liste executingTuples ! ");
+			System.exit(0);
+			
 		}
 		
-		TimeKeeper.getInstance().tupleStartedExecution(tuple);
-		updateAllocatedMips(moduleName);
-		processCloudletSubmit(ev, false);
-		updateAllocatedMips(moduleName);
-		/*for(Vm vm : getHost().getVmList()){
-			Logger.error(getName(), "MIPS allocated to "+((AppModule)vm).getName()+" = "+getHost().getTotalAllocatedMipsForVm(vm));
-		}*/
+		
+		
 	}
+    
+	
+	// Méthode pour parcourir la file d'attente et lancer les tuples si les ressources le permettent
+    public void processTupleQueue() {
+    	
+    	System.out.println("Checking for waiting tuples on TupleQueue on FogDevice:"+this.getName());
+    	
+    	Iterator<Pair<Tuple, AppModule>> iterator = tupleQueue.iterator();
+    	
+    	boolean cond = false;
+        while (iterator.hasNext()) {
+            Pair<Tuple, AppModule> pair = iterator.next();
+            
+	        Tuple tuple = pair.getKey();
+	        AppModule appModule = pair.getValue();
+	        
+	        System.out.println("a wainting tuple is found :"+tuple.getTupleType()+"  AppModule:"+appModule.getName());
+	        
+	        double appModuleMips = appModule.getMips(); // MIPS requis pour exécuter le tuple
+	        long appModuleRam = appModule.getRam(); // RAM requise pour exécuter le tuple
+	        double tupleSizeMips = tuple.getCloudletLength(); // Taille du tuple en MIPS
+	
+	        // Vérifier si les ressources sont disponibles
+	        if (availableMips >= appModule.getMips() && availableRam >= appModule.getRam()) {
+	        	
+	        	cond =true;
+	        		        	
+	        	 // Décompte des ressources utilisées
+	            availableMips -= appModuleMips;
+	            availableRam -= appModuleRam;
+	            
+	            double executionTime = (double) (tupleSizeMips / appModuleMips); // Temps d'exécution en millisecondes
+	
+	            // Ajouter le tuple à la liste des tuples en cours d'exécution
+	            executingTuples.add(tuple);
+	            
+	            Pair<Tuple, AppModule> data = new Pair<Tuple, AppModule>(tuple, appModule);
+	                        
+	            send(this.getId(), executionTime, FogEvents.TupleExcutionCompleted, data);
+	            
+	            // Affichage des informations sur l'exécution du tuple
+	            System.out.println("Tuple " + tuple.getTupleType() + " sera exécuté sur FogDevice " + this.getName() + " durant " + executionTime + " ms");
+	        	
+	   
+	            // Retirer la paire de la file d'attente après son exécution
+                iterator.remove();
+                
+	
+	        }
+	    }
+        if(!cond) {
+        	System.out.println("No ressource are available to launch waiting tuples!");
+        }
+	}
+	
+	
 	
 	protected void processModuleArrival(SimEvent ev){
 		AppModule module = (AppModule)ev.getData();
@@ -838,8 +1034,23 @@ public class FogDevice extends PowerDatacenter {
 	
 	
 	protected void sendToSelf(Tuple tuple){
+		//*System.out.println("Time: "+CloudSim.getClock()+" "+getName()+ " sends result tuple (FogEvents.TUPLE_ARRIVAL)  "+tuple.toString()+" to "+getId());
+
 		send(getId(), CloudSim.getMinTimeBetweenEvents(), FogEvents.TUPLE_ARRIVAL, tuple);
 	}
+	
+	protected void sendToNode(int devId, Tuple tuple){
+		
+		float latency = DelayMatrix_Float.getFastestLink(this.getId(), devId);
+				
+		TimeKeeper.total_data_transfert_time += latency;
+
+		System.out.println("Time: "+CloudSim.getClock()+" FogDevice: "+this.getName()+" sends : FogEvents.TUPLE_ARRIVAL to FogDeviceId:"+devId+" tupletype:"+tuple.getTupleType()+
+				" Arrival time :"+(CloudSim.getClock()+latency));
+		send(devId, latency, FogEvents.TUPLE_ARRIVAL, tuple);
+	}
+	
+	
 	public PowerHost getHost(){
 		return (PowerHost) getHostList().get(0);
 	}
@@ -984,4 +1195,38 @@ public class FogDevice extends PowerDatacenter {
 			Map<String, Map<String, Integer>> moduleInstanceCount) {
 		this.moduleInstanceCount = moduleInstanceCount;
 	}
+	
+	public int getLeftId(){
+		return this.leftId;
+	}
+	
+	public void setLeftId(int leftId){
+		this.leftId=leftId;
+	}
+	
+	public int getRightId(){
+		return this.rightId;
+	}
+	
+	public void setRightId(int rightId){
+		this.rightId=rightId;
+	}
+	
+	public float getRightLatency(){
+		return this.rightLatency;
+	}
+	
+	public void setRightLatency(float rightLatency){
+		this.rightLatency=rightLatency;
+	}
+	
+	public float getLeftLatency(){
+		return this.leftLatency;
+	}
+	
+	public void setLeftLatency(float leftLatency){
+		this.leftLatency=leftLatency;
+	}
+	
+	
 }
